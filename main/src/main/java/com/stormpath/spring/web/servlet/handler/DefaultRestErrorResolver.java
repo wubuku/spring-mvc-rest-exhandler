@@ -31,7 +31,7 @@ import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.context.request.ServletWebRequest;
 import org.springframework.web.servlet.LocaleResolver;
-import org.springframework.web.servlet.mvc.multiaction.NoSuchRequestHandlingMethodException;
+//import org.springframework.web.servlet.mvc.multiaction.NoSuchRequestHandlingMethodException;
 
 import java.util.*;
 
@@ -113,7 +113,7 @@ public class DefaultRestErrorResolver implements RestErrorResolver, MessageSourc
         applyDef(m, "javax.validation.ValidationException", HttpStatus.BAD_REQUEST);
 
         // 404
-        applyDef(m, NoSuchRequestHandlingMethodException.class, HttpStatus.NOT_FOUND);
+        //applyDef(m, NoSuchRequestHandlingMethodException.class, HttpStatus.NOT_FOUND);
         applyDef(m, "org.hibernate.ObjectNotFoundException", HttpStatus.NOT_FOUND);
 
         // 405

@@ -50,4 +50,11 @@
         </dependency>
     </dependencies>
 
+    <distributionManagement>
+            <repository>
+                <id>maven-snapshots</id>
+                <url>http://47.105.144.230:8081/repository/maven-snapshots</url>
+            </repository>
+    </distributionManagement>
+
 </project>
