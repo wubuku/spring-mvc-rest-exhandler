@@ -1,12 +1,35 @@
 # Spring REST 异常处理实现指南
 
 ## 目录
-1. [快速开始](#1-快速开始)
-2. [完整功能实现](#2-完整功能实现)
-3. [高级特性](#3-高级特性)
-4. [最佳实践](#4-最佳实践)
-5. [历史分析与设计思路](#5-历史分析与设计思路)
-6. [常见问题](#6-常见问题)
+- [Spring REST 异常处理实现指南](#spring-rest-异常处理实现指南)
+  - [目录](#目录)
+  - [1. 快速开始](#1-快速开始)
+    - [1.1 环境要求](#11-环境要求)
+    - [1.2 基础依赖](#12-基础依赖)
+    - [1.3 最简实现](#13-最简实现)
+    - [1.4 Spring Boot 默认异常处理](#14-spring-boot-默认异常处理)
+    - [1.5 下一步](#15-下一步)
+  - [2. 完整功能实现](#2-完整功能实现)
+    - [2.1 错误码定义](#21-错误码定义)
+    - [2.2 配置文件](#22-配置文件)
+    - [2.3 配置属性类](#23-配置属性类)
+    - [2.4 错误响应构建器](#24-错误响应构建器)
+    - [2.5 错误响应示例](#25-错误响应示例)
+    - [2.6 全局异常处理器](#26-全局异常处理器)
+    - [2.7 使用示例](#27-使用示例)
+  - [3. 高级特性](#3-高级特性)
+    - [3.1 异常映射定义](#31-异常映射定义)
+    - [3.2 国际化支持](#32-国际化支持)
+    - [3.3 方案对比分析](#33-方案对比分析)
+  - [4. 最佳实践](#4-最佳实践)
+    - [4.1 方案选择](#41-方案选择)
+    - [4.2 设计规范](#42-设计规范)
+    - [4.3 环境配置](#43-环境配置)
+    - [4.4 安全考虑](#44-安全考虑)
+    - [4.5 性能优化](#45-性能优化)
+    - [4.6 测试策略](#46-测试策略)
+    - [4.7 维护建议](#47-维护建议)
+    - [4.8 设计决策说明](#48-设计决策说明)
 
 ## 1. 快速开始
 
@@ -20,6 +43,7 @@
 <dependency>
     <groupId>org.springframework.boot</groupId>
     <artifactId>spring-boot-starter-web</artifactId>
+    <version>3.2.0</version>
 </dependency>
 ```
 
@@ -29,6 +53,7 @@
 @RestControllerAdvice
 public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     
+    // 处理未捕获的异常
     @ExceptionHandler(Exception.class)
     ProblemDetail handleAllExceptions(Exception ex) {
         return ProblemDetail.forStatusAndDetail(
@@ -47,6 +72,72 @@ spring:
       enabled: true
 ```
 
+### 1.4 Spring Boot 默认异常处理
+通过继承 `ResponseEntityExceptionHandler`，以下异常会自动得到处理：
+
+1. **HTTP 请求相关**
+   - `HttpRequestMethodNotSupportedException` (405 Method Not Allowed)
+   - `HttpMediaTypeNotSupportedException` (415 Unsupported Media Type)
+   - `HttpMediaTypeNotAcceptableException` (406 Not Acceptable)
+   - `MissingPathVariableException` (500 Internal Server Error)
+   - `MissingServletRequestParameterException` (400 Bad Request)
+   - `ServletRequestBindingException` (400 Bad Request)
+   - `MethodArgumentNotValidException` (400 Bad Request)
+
+2. **Spring Security 相关**（需添加 spring-boot-starter-security）
+   - `AccessDeniedException` (403 Forbidden)
+   - `AuthenticationException` (401 Unauthorized)
+
+3. **数据绑定相关**
+   - `BindException` (400 Bad Request)
+   - `TypeMismatchException` (400 Bad Request)
+
+4. **其他常见异常**
+   - `NoHandlerFoundException` (404 Not Found)
+   - `AsyncRequestTimeoutException` (503 Service Unavailable)
+
+示例响应：
+```json
+{
+    "type": "about:blank",
+    "title": "Not Found",
+    "status": 404,
+    "detail": "No handler found for GET /unknown-path",
+    "instance": "/unknown-path"
+}
+```
+
+如果需要自定义这些异常的处理，可以重写相应的方法：
+```java
+@RestControllerAdvice
+public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
+    
+    @Override
+    protected ResponseEntity<Object> handleHttpRequestMethodNotSupported(
+            HttpRequestMethodNotSupportedException ex, 
+            HttpHeaders headers, 
+            HttpStatusCode status, 
+            WebRequest request) {
+        
+        ProblemDetail body = ProblemDetail.forStatusAndDetail(
+            HttpStatus.METHOD_NOT_ALLOWED,
+            "Method " + ex.getMethod() + " is not supported"
+        );
+        body.setProperty("supportedMethods", ex.getSupportedHttpMethods());
+        
+        return new ResponseEntity<>(body, headers, status);
+    }
+}
+```
+
+### 1.5 下一步
+上面的最简实现已经能处理基本的异常情况。如果需要：
+- 自定义错误码
+- 统一的错误响应格式
+- 更灵活的异常处理
+
+请参考第2章的完整功能实现。
+
 ## 2. 完整功能实现
 
 ### 2.1 错误码定义
@@ -56,6 +147,7 @@ public interface ErrorCodes {
     int UNKNOWN_ERROR = 1000;
     int VALIDATION_ERROR = 1001;
     int ACCESS_DENIED = 1002;
+    int AUTHENTICATION_FAILED = 1003;
     
     // 业务错误 (2000-2999)
     int USER_NOT_FOUND = 2000;
@@ -68,18 +160,20 @@ public interface ErrorCodes {
 spring:
   mvc:
     problemdetails:
-      enabled: true  # 启用 RFC 7807 Problem Details 支持
+      enabled: true  # 启用 RFC 7807 规范的错误响应格式
   jackson:
-    default-property-inclusion: non_null  # 序列化时忽略 null 值
+    default-property-inclusion: non_null  # 响应中不包含 null 值的字段
     serialization:
-      indent-output: true  # 美化输出的 JSON（开发环境推荐）
-      write-dates-as-timestamps: false  # 使用 ISO-8601 格式序列化日期
+      indent-output: true  # 开发环境下格式化 JSON 输出
+      write-dates-as-timestamps: false  # 日期格式使用 ISO-8601
 
 api:
   error:
-    more-info-url-template: "https://api.example.com/docs/errors/%s"
-    include-stacktrace: never  # 可选值：ALWAYS, NEVER, ON_PARAM
-    include-developer-message: false
+    # 错误类型前缀，用于标识错误类型
+    type-prefix: "https://api.example.com/problems"
+    # 错误文档URL，可选配置
+    docs-url-template: "https://api.example.com/docs/errors/%s"
+    include-stacktrace: never
 ```
 
 ### 2.3 配置属性类
@@ -89,9 +183,9 @@ api:
 @Getter
 @Setter
 public class ErrorProperties {
-    private String moreInfoUrlTemplate = "https://api.example.com/errors/%s";
+    private String typePrefix;
+    private String docsUrlTemplate;
     private StackTraceMode includeStacktrace = StackTraceMode.NEVER;
-    private boolean includeDeveloperMessage = false;
     
     public enum StackTraceMode {
         ALWAYS, NEVER, ON_PARAM
@@ -117,17 +211,24 @@ public class ProblemDetailBuilder {
             message
         );
         
-        // 设置基本属性
-        problemDetail.setType(URI.create(
-            String.format(errorProperties.getMoreInfoUrlTemplate(), errorCode)
-        ));
+        // 设置错误类型
+        String typePrefix = errorProperties.getTypePrefix();
+        if (StringUtils.hasText(typePrefix)) {
+            problemDetail.setType(URI.create(
+                String.format("%s/%s", typePrefix, errorCode)
+            ));
+        }
+        
+        // 设置文档链接（如果配置了）
+        String docsUrl = errorProperties.getDocsUrlTemplate();
+        if (StringUtils.hasText(docsUrl)) {
+            problemDetail.setProperty("moreInfo", 
+                String.format(docsUrl, errorCode));
+        }
+        
+        // 设置其他属性
         problemDetail.setProperty("code", errorCode);
         problemDetail.setProperty("timestamp", LocalDateTime.now());
-        
-        // 根据配置添加开发者信息
-        if (errorProperties.isIncludeDeveloperMessage()) {
-            problemDetail.setProperty("developerMessage", message);
-        }
         
         // 添加自定义属性
         if (properties != null) {
@@ -139,50 +240,132 @@ public class ProblemDetailBuilder {
 }
 ```
 
-### 2.5 全局异常处理器
+### 2.5 错误响应示例
+1. 完整配置的响应（开发环境）：
+```json
+{
+    "type": "https://api.example.com/problems/2000",
+    "title": "Not Found",
+    "status": 404,
+    "detail": "User with ID '123' not found",
+    "code": 2000,
+    "moreInfo": "https://api.example.com/docs/errors/2000",
+    "timestamp": "2024-01-20T10:15:30.123Z",
+    "stackTrace": "com.example.ResourceNotFoundException: User not found\n\tat com.example.UserController.getUser(UserController.java:25)\n..."
+}
+```
+
+2. 最小配置的响应（生产环境）：
+```json
+{
+    "title": "Not Found",
+    "status": 404,
+    "detail": "User with ID '123' not found",
+    "code": 2000,
+    "timestamp": "2024-01-20T10:15:30.123Z"
+}
+```
+
+### 2.6 全局异常处理器
 ```java
 @RestControllerAdvice
 @RequiredArgsConstructor
 public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     
     private final ProblemDetailBuilder problemDetailBuilder;
+    private final ErrorProperties errorProperties;
+    
+    private boolean shouldIncludeStackTrace(WebRequest request) {
+        StackTraceMode mode = errorProperties.getIncludeStacktrace();
+        if (mode == StackTraceMode.ALWAYS) {
+            return true;
+        }
+        if (mode == StackTraceMode.ON_PARAM && request.getParameter("trace") != null) {
+            return true;
+        }
+        return false;
+    }
     
     // 处理业务异常
     @ExceptionHandler(BusinessException.class)
-    ProblemDetail handleBusinessException(BusinessException ex) {
+    ProblemDetail handleBusinessException(BusinessException ex, WebRequest request) {
+        Map<String, Object> properties = new HashMap<>();
+        properties.put("businessCode", ex.getBusinessCode());
+        if (shouldIncludeStackTrace(request)) {
+            properties.put("stackTrace", ExceptionUtils.getStackTrace(ex));
+        }
         return problemDetailBuilder.build(
             HttpStatus.BAD_REQUEST,
             ErrorCodes.BUSINESS_ERROR,
             ex.getMessage(),
-            Map.of("businessCode", ex.getBusinessCode())
+            properties
         );
     }
     
     // 处理资源未找到
     @ExceptionHandler(ResourceNotFoundException.class)
-    ProblemDetail handleResourceNotFound(ResourceNotFoundException ex) {
+    ProblemDetail handleResourceNotFound(ResourceNotFoundException ex, WebRequest request) {
+        Map<String, Object> properties = new HashMap<>();
+        properties.put("resourceId", ex.getResourceId());
+        if (shouldIncludeStackTrace(request)) {
+            properties.put("stackTrace", ExceptionUtils.getStackTrace(ex));
+        }
         return problemDetailBuilder.build(
             HttpStatus.NOT_FOUND,
             ErrorCodes.USER_NOT_FOUND,
             ex.getMessage(),
-            Map.of("resourceId", ex.getResourceId())
+            properties
+        );
+    }
+    
+    // 处理访问拒绝异常
+    @ExceptionHandler(AccessDeniedException.class)
+    ProblemDetail handleAccessDenied(AccessDeniedException ex, WebRequest request) {
+        Map<String, Object> properties = new HashMap<>();
+        if (shouldIncludeStackTrace(request)) {
+            properties.put("stackTrace", ExceptionUtils.getStackTrace(ex));
+        }
+        return problemDetailBuilder.build(
+            HttpStatus.FORBIDDEN,
+            ErrorCodes.ACCESS_DENIED,
+            "Access denied",
+            properties
+        );
+    }
+    
+    // 处理认证异常
+    @ExceptionHandler(AuthenticationException.class)
+    ProblemDetail handleAuthenticationException(AuthenticationException ex, WebRequest request) {
+        Map<String, Object> properties = new HashMap<>();
+        if (shouldIncludeStackTrace(request)) {
+            properties.put("stackTrace", ExceptionUtils.getStackTrace(ex));
+        }
+        return problemDetailBuilder.build(
+            HttpStatus.UNAUTHORIZED,
+            ErrorCodes.AUTHENTICATION_FAILED,
+            "Authentication failed",
+            properties
         );
     }
     
     // 处理其他异常
     @ExceptionHandler(Exception.class)
-    ProblemDetail handleOthers(Exception ex) {
+    ProblemDetail handleOthers(Exception ex, WebRequest request) {
+        Map<String, Object> properties = new HashMap<>();
+        if (shouldIncludeStackTrace(request)) {
+            properties.put("stackTrace", ExceptionUtils.getStackTrace(ex));
+        }
         return problemDetailBuilder.build(
             HttpStatus.INTERNAL_SERVER_ERROR,
             ErrorCodes.UNKNOWN_ERROR,
             "An unexpected error occurred",
-            null
+            properties
         );
     }
 }
 ```
 
-### 2.6 使用示例
+### 2.7 使用示例
 ```java
 @RestController
 @RequestMapping("/api/users")
@@ -198,13 +381,45 @@ public class UserController {
     }
 }
 
-// 自定义异常
+// 基础异常类
 @Getter
-public class ResourceNotFoundException extends RuntimeException {
+public abstract class BaseException extends RuntimeException {
+    private final int errorCode;
+    private final Map<String, Object> properties;
+    
+    protected BaseException(int errorCode, String message) {
+        super(message);
+        this.errorCode = errorCode;
+        this.properties = new HashMap<>();
+    }
+    
+    public void addProperty(String key, Object value) {
+        properties.put(key, value);
+    }
+    
+    public Map<String, Object> getProperties() {
+        return Collections.unmodifiableMap(properties);
+    }
+}
+
+// 业务异常
+@Getter
+public class BusinessException extends BaseException {
+    private final String businessCode;
+    
+    public BusinessException(String message, String businessCode) {
+        super(ErrorCodes.BUSINESS_ERROR, message);
+        this.businessCode = businessCode;
+    }
+}
+
+// 资源未找到异常
+@Getter
+public class ResourceNotFoundException extends BaseException {
     private final String resourceId;
     
     public ResourceNotFoundException(String message, String resourceId) {
-        super(message);
+        super(ErrorCodes.USER_NOT_FOUND, message);
         this.resourceId = resourceId;
     }
 }
@@ -258,7 +473,6 @@ public class ErrorDefinition {
     HttpStatus status;
     int errorCode;
     String messageTemplate;
-    String moreInfoUrlTemplate;
 }
 
 /**
@@ -313,10 +527,10 @@ public class MessageSourceConfig {
     public MessageSource errorMessageSource(ErrorProperties properties) {
         ReloadableResourceBundleMessageSource messageSource = 
             new ReloadableResourceBundleMessageSource();
-        messageSource.setBasename(properties.getMessagesBasename());
-        messageSource.setDefaultLocale(properties.getDefaultLocale());
+        messageSource.setBasename("messages/errors");
+        messageSource.setDefaultLocale(Locale.ENGLISH);
         messageSource.setDefaultEncoding("UTF-8");
-        messageSource.setCacheSeconds(properties.getMessageCacheSeconds());
+        messageSource.setCacheSeconds(3600);
         return messageSource;
     }
 }
@@ -365,15 +579,15 @@ error.3001=Insufficient stock, current: {0}, required: {1}
    - 通用异常使用映射配置
    - 平衡了灵活性和简洁性
    
-   实现示例见 5.2.5 节的 `GlobalExceptionHandler`
+   实现示例见 2.6 节的 `GlobalExceptionHandler`
 
 ## 4. 最佳实践
 
 ### 4.1 方案选择
 1. **项目规模与方案对应**
-   - 小型项目：使用基础实现（5.1节）
-   - 中型项目：使用完整功能实现（5.2节）
-   - 大型项目：考虑高级特性（5.3节）
+   - 小型项目：使用基础实现（1.3节）
+   - 中型项目：使用完整功能实现（2.x节）
+   - 大型项目：考虑高级特性（3.x节）
 
 2. **异常处理策略**
    - 业务异常：使用专门的异常类和处理方法
@@ -388,44 +602,29 @@ error.3001=Insufficient stock, current: {0}, required: {1}
    - 9xxx：其他未分类错误
 
 2. **异常类设计**
-   ```java
-   @Getter
-   public abstract class BaseException extends RuntimeException {
-       private final int errorCode;
-       private final Map<String, Object> properties;
-       
-       protected BaseException(int errorCode, String message) {
-           super(message);
-           this.errorCode = errorCode;
-           this.properties = new HashMap<>();
-       }
-   }
+   - 继承 `BaseException`
+   - 使用 `properties` 存储额外信息
+   - 提供清晰的错误消息
    
-   public class UserNotFoundException extends BaseException {
-       public UserNotFoundException(String userId) {
-           super(ErrorCodes.USER_NOT_FOUND, "User not found: " + userId);
-           getProperties().put("userId", userId);
-       }
-   }
-   ```
+   示例见 2.7 节的异常类定义
 
 ### 4.3 环境配置
 1. **开发环境**
    ```yaml
    api:
      error:
+       type-prefix: "https://api.example.com/problems"
+       docs-url-template: "https://api.example.com/docs/errors/%s"
        include-stacktrace: ALWAYS
-       include-developer-message: true
-       indent-output: true
    ```
 
 2. **生产环境**
    ```yaml
    api:
      error:
+       type-prefix: "https://api.example.com/problems"
+       docs-url-template: "https://api.example.com/docs/errors/%s"
        include-stacktrace: NEVER
-       include-developer-message: false
-       indent-output: false
    ```
 
 ### 4.4 安全考虑
@@ -433,6 +632,8 @@ error.3001=Insufficient stock, current: {0}, required: {1}
    - 生产环境中隐藏技术细节
    - 避免在错误消息中包含敏感信息
    - 使用适当的抽象级别描述错误
+   - 生产环境禁用堆栈跟踪或仅对特定IP开放
+   - 使用 ON_PARAM 模式时注意访问控制
 
 2. **访问控制**
    - 错误详情页面需要权限控制
@@ -462,16 +663,28 @@ error.3001=Insufficient stock, current: {0}, required: {1}
 
 ### 4.6 测试策略
 1. **单元测试**
-   ```java
-   @Test
-   void whenUserNotFound_thenReturn404() {
-       Exception ex = new UserNotFoundException("test-id");
-       ProblemDetail problem = handler.handleUserNotFoundException(ex);
-       
-       assertThat(problem.getStatus()).isEqualTo(404);
-       assertThat(problem.getProperty("code")).isEqualTo(2001);
-   }
-   ```
+```java
+@Test
+void whenUserNotFound_thenReturn404() {
+    Exception ex = new UserNotFoundException("test-id");
+    ProblemDetail problem = handler.handleUserNotFoundException(ex);
+    
+    assertThat(problem.getStatus()).isEqualTo(404);
+    assertThat(problem.getProperty("code")).isEqualTo(2001);
+    assertThat(problem.getProperty("resourceId")).isEqualTo("test-id");
+    assertThat(problem.getType().toString())
+        .isEqualTo("https://api.example.com/problems/2000");
+}
+
+@Test
+void whenValidationFails_thenReturn400() {
+    MethodArgumentNotValidException ex = // ... 
+    ProblemDetail problem = handler.handleMethodArgumentNotValid(ex);
+    
+    assertThat(problem.getStatus()).isEqualTo(400);
+    assertThat(problem.getProperty("code")).isEqualTo(1001);
+}
+```
 
 2. **集成测试**
    ```java
@@ -503,70 +716,19 @@ error.3001=Insufficient stock, current: {0}, required: {1}
    - 设置关键错误的告警阈值
    - 定期分析错误趋势
 
-## 5. 历史分析与设计思路
+### 4.8 设计决策说明
 
-### 5.1 错误响应的标准化
-`RestError` 的设计理念值得借鉴：
-- 统一的错误响应格式
-- 包含 status、code、message、developerMessage 等字段
-- 支持更多错误详情的扩展
+1. **错误信息分层**
+   - 用户层：通过 `detail` 字段提供用户友好的错误信息
+   - 开发者层：通过日志系统记录详细信息
+   - 文档层：通过 `type` 和 `moreInfo` 提供错误处理指南
 
-### 5.2 错误解析的分层设计
-接口设计思路仍然有参考价值：
-```java
-public interface RestErrorResolver
-public interface RestErrorConverter<T>
-```
+2. **属性控制**
+   - 标准属性：严格遵循 RFC 7807 规范
+   - 扩展属性：仅添加 `code`、`timestamp` 等必要信息
+   - 敏感信息：通过日志系统记录，不在响应中返回
 
-## 6. 常见问题
-
-### 6.1 先决条件说明
-- Spring Boot 2.7.0 或更高版本（推荐 3.0+ 使用 ProblemDetail）
-- Java 17 或更高版本（使用 Spring Boot 3.0+）
-- Maven 或 Gradle
-
-### 6.2 配置项说明
-- `spring.mvc.problemdetails.enabled`: 启用 RFC 7807 Problem Details 支持
-- `spring.jackson.default-property-inclusion`: 序列化时忽略 null 值
-- `spring.jackson.serialization.indent-output`: 美化输出的 JSON（开发环境推荐）
-- `spring.jackson.serialization.write-dates-as-timestamps`: 使用 ISO-8601 格式序列化日期
-- `spring.jackson.serialization.fail-on-empty-beans`: 序列化时忽略空对象
-- `spring.jackson.deserialization.fail-on-unknown-properties`: 反序列化时忽略未知属性
-- `api.error.more-info-url-template`: 错误信息URL模板
-- `api.error.include-stacktrace`: 堆栈跟踪显示模式
-- `api.error.include-developer-message`: 是否包含开发者信息
-- `api.error.messages.basename`: 消息资源文件基础名
-- `api.error.messages.default-locale`: 默认语言
-
-### 6.3 常见问题解答
-1. **如何选择合适的异常处理方案？**
-   - 对于小型项目，直接处理方案可能更简单。
-   - 对于中型项目，完整功能实现可以提供更灵活的异常处理。
-   - 对于大型项目，高级特性可以提供更复杂的异常处理。
-
-2. **如何设计错误码？**
-   - 1xxx：系统级错误（如：1001-参数验证失败）
-   - 2xxx：用户模块错误（如：2001-用户未找到）
-   - 3xxx：订单模块错误（如：3001-库存不足）
-   - 9xxx：其他未分类错误
-
-3. **如何设计异常类？**
-   - 使用 `@Getter` 注解创建一个抽象的 `BaseException` 类
-   - 为每个具体的异常创建一个子类，并调用父类的构造函数
-
-4. **如何配置环境？**
-   - 开发环境：`api.error.include-stacktrace: ALWAYS` 和 `api.error.include-developer-message: true`
-   - 生产环境：`api.error.include-stacktrace: NEVER` 和 `api.error.include-developer-message: false`
-
-5. **如何处理性能问题？**
-   - 配置消息源缓存时间
-   - 使用异步日志记录错误
-
-6. **如何进行测试？**
-   - 编写单元测试
-   - 编写集成测试
-
-7. **如何维护代码？**
-   - 及时更新错误码文档
-   - 记录异常处理的变更历史
-   - 提供错误码查询接口
+3. **URL 设计**
+   - `type`：用于标识错误类型，如 "https://api.example.com/problems/user-not-found"
+   - `moreInfo`：用于提供错误处理文档，如 "https://api.example.com/docs/errors/2000"
+   - 分离关注点：错误类型和文档URL分开管理
