@@ -50,6 +50,8 @@
 ### 1.3 最简实现
 1. 添加全局异常处理器：
 ```java
+// src/main/java/com/example/config/GlobalExceptionHandler.java
+// 或者 src/main/java/com/example/common/config/GlobalExceptionHandler.java
 @RestControllerAdvice
 public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     
@@ -63,6 +65,10 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     }
 }
 ```
+
+> 注意：`GlobalExceptionHandler` 虽然是异常处理相关的类，但由于它是一个全局配置类，
+> 建议将其放在 `config` 包下，与其他配置类（如 `WebMvcConfig`、`SecurityConfig` 等）放在一起。
+> 而具体的异常类（如 `BaseException`、`BusinessException` 等）则放在 `exception` 包下。
 
 2. 启用 Problem Details 支持：
 ```yaml
@@ -268,6 +274,7 @@ public class ProblemDetailBuilder {
 
 ### 2.6 全局异常处理器
 ```java
+// src/main/java/com/example/config/GlobalExceptionHandler.java
 @RestControllerAdvice
 @RequiredArgsConstructor
 public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
@@ -381,7 +388,7 @@ public class UserController {
     }
 }
 
-// 基础异常类
+// src/main/java/com/example/common/exception/BaseException.java
 @Getter
 public abstract class BaseException extends RuntimeException {
     private final int errorCode;
@@ -402,7 +409,7 @@ public abstract class BaseException extends RuntimeException {
     }
 }
 
-// 业务异常
+// src/main/java/com/example/common/exception/BusinessException.java
 @Getter
 public class BusinessException extends BaseException {
     private final String businessCode;
@@ -413,7 +420,7 @@ public class BusinessException extends BaseException {
     }
 }
 
-// 资源未找到异常
+// src/main/java/com/example/common/exception/ResourceNotFoundException.java
 @Getter
 public class ResourceNotFoundException extends BaseException {
     private final String resourceId;
